@@ -1,8 +1,8 @@
 import decimal
+import enum
 import json
 import sys
-import enum
-from typing import Tuple, Optional, Dict
+from typing import Dict, Optional, Tuple
 
 from awsglue import DynamicFrame
 from awsglue.context import GlueContext
@@ -11,7 +11,7 @@ from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
 from boto3.dynamodb.types import TypeDeserializer
 from pyspark.context import SparkContext
-from pyspark.sql.functions import col, from_json, udf
+from pyspark.sql.functions import col, from_json, isnull, lit, udf, when
 from pyspark.sql.types import *
 
 
@@ -80,7 +80,7 @@ class DynamoDBSchema:
             "event_id": "VARCHAR",
             "event_name": "VARCHAR",
             "table_name": "VARCHAR",
-            "approx_creation_timestamp_millis": "INT",
+            "approx_creation_timestamp_millis": "BIGINT",
             "keys_json": "VARCHAR",
             "new_image_json": "VARCHAR",
             "size_bytes": "INT",
@@ -90,12 +90,15 @@ class DynamoDBSchema:
     INFER_SCHEMA_COLUMN = "$json$data_infer_schema$_temporary$"
     PARSED_COLUMNS = {
         "event_id": "VARCHAR",
-        "event_name": "VARCHAR",
+        "last_event_name": "VARCHAR",
         "table_name": "VARCHAR",
-        "approx_creation_timestamp_millis": "INT",
+        "approx_creation_timestamp_millis": "BIGINT",
         "keys": "VARCHAR",
         "new_image": "VARCHAR",
-        "size_bytes": "INT",
+        "has_parsing_error": "BOOLEAN",
+        "is_deleted": "BOOLEAN",
+        "raw_size_bytes": "INT",
+        "raw": "VARCHAR",
     }
     KEY_COLUMN = "keys"
     STRUCT_SCHEMA = StructType(
@@ -112,7 +115,7 @@ class DynamoDBSchema:
     )
     NESTED_STRUCT_SCHEMA = StructType(
         [
-            StructField("ApproximateCreationDateTime", IntegerType(), True),
+            StructField("ApproximateCreationDateTime", LongType(), True),
             StructField("Keys", StringType(), True),
             StructField("NewImage", StringType(), True),
             StructField("SizeBytes", IntegerType(), True),
@@ -209,19 +212,24 @@ def processBatch(data_frame, batchId):
                 DDB_SCHEMA_HANDLER.STRUCT_SCHEMA,
             ),
         )
-        .select("data.*")
+        .select("data.*", col(DDB_SCHEMA_HANDLER.INFER_SCHEMA_COLUMN).alias("raw"))
         .withColumn("dynamodb_decoded", PARSE_DYNAMODB_UDF("dynamodb"))
         .select(
             col("eventID").alias("event_id"),
-            col("eventName").alias("event_name"),
+            col("eventName").alias("last_event_name"),
             col("tableName").alias("table_name"),
             col("dynamodb_decoded.ApproximateCreationDateTime").alias(
                 "approx_creation_timestamp_millis"
             ),
             col("dynamodb_decoded.Keys").alias("keys"),
             col("dynamodb_decoded.NewImage").alias("new_image"),
-            col("dynamodb_decoded.SizeBytes").alias("size_bytes"),
             col("dynamodb_decoded.error").alias("error"),
+            (~isnull("dynamodb_decoded.error")).alias("has_parsing_error"),
+            (when(col("eventName") == "REMOVE", True).otherwise(lit(False))).alias(
+                "is_deleted"
+            ),
+            col("dynamodb_decoded.SizeBytes").alias("raw_size_bytes"),
+            col("raw"),
         )
     )
     kinesis_microbatch_node = DynamicFrame.fromDF(
