@@ -97,8 +97,8 @@ class DynamoDBSchema:
         "new_image": "VARCHAR",
         "has_parsing_error": "BOOLEAN",
         "is_deleted": "BOOLEAN",
-        "raw_size_bytes": "INT",
-        "raw": "VARCHAR",
+        "raw_payload_size_bytes": "INT",
+        "raw_payload": "VARCHAR",
     }
     KEY_COLUMN = "keys"
     STRUCT_SCHEMA = StructType(
@@ -139,7 +139,7 @@ class DynamoDBSchema:
     @property
     def preactions(self) -> str:
         """Create staging and live tables for ingest data in Redshift as a pre-action for microbatches."""
-        schema = ", ".join(f"{k} {v}" for k, v in self.PARSED_COLUMNS.items())
+        schema = ", \n".join(f"{k} {v}" for k, v in self.PARSED_COLUMNS.items())
         return f"""
 CREATE TABLE IF NOT EXISTS {self.schema}.{self.table_name} ({schema}); 
 DROP TABLE IF EXISTS {self.schema}.{self.staging_table_name};
@@ -149,7 +149,7 @@ CREATE TABLE {self.schema}.{self.staging_table_name} ({schema});
     @property
     def postactions(self) -> str:
         """Merge and clean up up staging as a post-action for microbatches."""
-        columns = ", ".join(
+        columns = ", \n".join(
             f"{self.staging_table_name}.{col}" for col in self.PARSED_COLUMNS
         )
         return f"""
@@ -212,7 +212,9 @@ def processBatch(data_frame, batchId):
                 DDB_SCHEMA_HANDLER.STRUCT_SCHEMA,
             ),
         )
-        .select("data.*", col(DDB_SCHEMA_HANDLER.INFER_SCHEMA_COLUMN).alias("raw"))
+        .select(
+            "data.*", col(DDB_SCHEMA_HANDLER.INFER_SCHEMA_COLUMN).alias("raw_payload")
+        )
         .withColumn("dynamodb_decoded", PARSE_DYNAMODB_UDF("dynamodb"))
         .select(
             col("eventID").alias("event_id"),
@@ -228,8 +230,8 @@ def processBatch(data_frame, batchId):
             (when(col("eventName") == "REMOVE", True).otherwise(lit(False))).alias(
                 "is_deleted"
             ),
-            col("dynamodb_decoded.SizeBytes").alias("raw_size_bytes"),
-            col("raw"),
+            col("dynamodb_decoded.SizeBytes").alias("raw_payload_size_bytes"),
+            col("raw_payload"),
         )
     )
     kinesis_microbatch_node = DynamicFrame.fromDF(
