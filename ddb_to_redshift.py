@@ -11,8 +11,9 @@ from awsglue.transforms import *
 from awsglue.utils import getResolvedOptions
 from boto3.dynamodb.types import TypeDeserializer
 from pyspark.context import SparkContext
-from pyspark.sql.functions import col, from_json, isnull, lit, udf, when
+from pyspark.sql.functions import col, from_json, isnull, lit, row_number, udf, when
 from pyspark.sql.types import *
+from pyspark.sql.window import Window
 
 
 # Helper methods for dealing with inputs / serialization
@@ -44,24 +45,31 @@ args = getResolvedOptions(
         "RedshiftTableName",
         "RedshiftStagingTableName",
         "RedshiftSchema",
+        "KinesisRoleARN",
     ],
 )
-sc = SparkContext()
-glueContext = GlueContext(sc)
-spark = glueContext.spark_session
-job = Job(glueContext)
-job.init(args["JOB_NAME"], args)
-
 # Constants used throughout the script
+JOB_NAME = args["JOB_NAME"]
 TMP_DIR = args["TempDir"]
 TABLE_NAME = args["RedshiftTableName"]
 STAGING_TABLE_NAME = args["RedshiftStagingTableName"]
 SCHEMA = args["RedshiftSchema"]
+KINESIS_STREAM = args["StreamARN"]
+KINESIS_IAM_ROLE = args["KinesisRoleARN"]
+REDSHIFT_CONNECTION_NAME = args["RedshiftConnectionName"]
+S3_OUTPUT_PATH = args["S3OutputPath"]
 DESERIALIZER = TypeDeserializer()
 OUTPUT_MODE = OutputMode[args["OutputMode"].upper()]
+sc = SparkContext()
+glueContext = GlueContext(sc)
+spark = glueContext.spark_session
+job = Job(glueContext)
+job.init(JOB_NAME, args)
+
 
 # These actions get run at the beginning of each microbatch, ensuring that a fresh Glue table exists
 # for staging data
+# Note: The SQL for pre/post actions can't include comments (as they must be single-line and newlines are removed below)
 PREACTIONS = f"""
 CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE_NAME} (
     event_id VARCHAR, 
@@ -69,12 +77,13 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE_NAME} (
     table_name VARCHAR, 
     approx_creation_timestamp_millis BIGINT, 
     keys VARCHAR, 
-    new_image VARCHAR, 
-    old_image VARCHAR, 
+    new_image SUPER, 
+    old_image SUPER, 
+    error VARCHAR, 
     has_parsing_error BOOLEAN, 
     is_deleted BOOLEAN, 
     raw_payload_size_bytes INT, 
-    raw_payload VARCHAR
+    raw_payload VARCHAR(max)
 ); 
 DROP TABLE IF EXISTS {SCHEMA}.{STAGING_TABLE_NAME};
 CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
@@ -83,12 +92,13 @@ CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
     table_name VARCHAR, 
     approx_creation_timestamp_millis BIGINT, 
     keys VARCHAR, 
-    new_image VARCHAR, 
-    old_image VARCHAR, 
+    new_image SUPER, 
+    old_image SUPER, 
+    error VARCHAR, 
     has_parsing_error BOOLEAN, 
     is_deleted BOOLEAN, 
     raw_payload_size_bytes INT, 
-    raw_payload VARCHAR
+    raw_payload VARCHAR(max)
 );
 """
 
@@ -107,6 +117,7 @@ WHEN NOT MATCHED THEN INSERT VALUES (
     {SCHEMA}.{STAGING_TABLE_NAME}.keys, 
     {SCHEMA}.{STAGING_TABLE_NAME}.new_image, 
     {SCHEMA}.{STAGING_TABLE_NAME}.old_image, 
+    {SCHEMA}.{STAGING_TABLE_NAME}.error, 
     {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error, 
     {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted, 
     {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes, 
@@ -125,7 +136,7 @@ def _ddb_to_json(data: Dict, prop: str) -> Optional[str]:
     :param prop: The key to convert from the input data (e.g. Keys or NewImage from DynamoDB Streams)
     """
     if prop not in data:
-        return None
+        return "{}"
     return json.dumps(DESERIALIZER.deserialize({"M": data[prop]}), cls=DecimalEncoder)
 
 
@@ -174,20 +185,24 @@ PARSE_DYNAMODB_UDF = udf(
 
 # Connection options for S3 and Redshift modes
 REDSHIFT_CONNECTION_OPTS = {
-    "postactions": POSTACTIONS,
+    # Note: Redshift preactions / postactions can't contain newline characters:
+    # https://repost.aws/knowledge-center/sql-commands-redshift-glue-job
+    "postactions": POSTACTIONS.replace("\n", ""),
     "redshiftTmpDir": TMP_DIR,
     "useConnectionProperties": "true",
     "dbtable": f"{SCHEMA}.{STAGING_TABLE_NAME}",
-    "connectionName": args["RedshiftConnectionName"],
-    "preactions": PREACTIONS,
+    "connectionName": REDSHIFT_CONNECTION_NAME,
+    "preactions": PREACTIONS.replace("\n", ""),
 }
-S3_CONNECTION_OPTS = {"path": args["S3OutputPath"]}
+S3_CONNECTION_OPTS = {"path": S3_OUTPUT_PATH}
+# NOTE: For cross-account Kinesis streams, this needs the role ARN to assume
 KINESIS_CONNECTION_OPTS = {
     "typeOfData": "kinesis",
-    "streamARN": args["StreamARN"],
+    "streamARN": KINESIS_STREAM,
     "classification": "json",
     "startingPosition": "earliest",
     "inferSchema": "true",
+    "awsSTSRoleARN": KINESIS_IAM_ROLE,
 }
 
 
@@ -253,6 +268,17 @@ def processBatch(data_frame, batchId):
             col("dynamodb_decoded.SizeBytes").alias("raw_payload_size_bytes"),
             col("raw_payload"),
         )
+        # Select only the latest unique row from this microbatch for each key
+        .withColumn(
+            "sequence_id",
+            row_number().over(
+                Window.partitionBy("keys").orderBy(
+                    col("approx_creation_timestamp_millis").desc()
+                )
+            ),
+        )
+        .filter("sequence_id == 1")
+        .drop("sequence_id")
     )
 
     # Now that we've processed the data, we can write it out to our target
@@ -290,7 +316,7 @@ glueContext.forEachBatch(
     batch_function=processBatch,
     options={
         "windowSize": "100 seconds",
-        "checkpointLocation": args["TempDir"] + "/" + args["JOB_NAME"] + "/checkpoint/",
+        "checkpointLocation": TMP_DIR + "/" + JOB_NAME + "/checkpoint/",
     },
 )
 job.commit()

@@ -15,6 +15,7 @@
         },
         "DefaultArguments": {
             "--StreamARN": "arn:aws-us-gov:kinesis:us-gov-west-1:053633994311:stream/ddb_stream",
+            "--KinesisRoleARN": "arn:aws-us-gov:iam::053633994311:role/GlueSuperUserRole",
             "--RedshiftTableName": "data",
             "--enable-glue-datacatalog": "true",
             "--S3OutputPath": "s3://core-zwy2.us-gov-west-1.s3.infra/KinesisSample/",
