@@ -3,8 +3,8 @@
         "Name": "redshift",
         "Description": "",
         "Role": "arn:aws-us-gov:iam::053633994311:role/GlueSuperUserRole",
-        "CreatedOn": "2023-05-12T14:01:54.699000-05:00",
-        "LastModifiedOn": "2023-05-15T16:32:04.498000-05:00",
+        "CreatedOn": "2023-05-12T15:01:54.699000-04:00",
+        "LastModifiedOn": "2023-05-16T18:22:43.421000-04:00",
         "ExecutionProperty": {
             "MaxConcurrentRuns": 1
         },
@@ -14,21 +14,21 @@
             "PythonVersion": "3"
         },
         "DefaultArguments": {
-            "--RedshiftTableName": "tbl_ddb_stream",
-            "--RedshiftStagingTableName": "tmb_tbl_ddb_stream",
-            "--RedshiftSchema": "public",
             "--StreamARN": "arn:aws-us-gov:kinesis:us-gov-west-1:053633994311:stream/ddb_stream",
-            "--S3OutputPath": "s3://core-zwy2.us-gov-west-1.s3.infra/KinesisSample/",
+            "--RedshiftTableName": "data",
             "--enable-glue-datacatalog": "true",
+            "--S3OutputPath": "s3://core-zwy2.us-gov-west-1.s3.infra/KinesisSample/",
             "--job-bookmark-option": "job-bookmark-disable",
-            "--OutputMode": "S3",
+            "--OutputMode": "REDSHIFT",
             "--TempDir": "s3://aws-glue-assets-053633994311-us-gov-west-1/temporary/",
+            "--RedshiftStagingTableName": "tmp",
             "--enable-metrics": "true",
             "--enable-spark-ui": "true",
             "--spark-event-logs-path": "s3://aws-glue-assets-053633994311-us-gov-west-1/sparkHistoryLogs/",
             "--enable-job-insights": "true",
             "--enable-continuous-cloudwatch-log": "true",
             "--RedshiftConnectionName": "redshift",
+            "--RedshiftSchema": "demo",
             "--job-language": "python",
             "--enable-auto-scaling": "true"
         },
