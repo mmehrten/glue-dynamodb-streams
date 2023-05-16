@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE_NAME} (
     approx_creation_timestamp_millis BIGINT, 
     keys VARCHAR, 
     new_image VARCHAR, 
+    old_image VARCHAR, 
     has_parsing_error BOOLEAN, 
     is_deleted BOOLEAN, 
     raw_payload_size_bytes INT, 
@@ -83,6 +84,7 @@ CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
     approx_creation_timestamp_millis BIGINT, 
     keys VARCHAR, 
     new_image VARCHAR, 
+    old_image VARCHAR, 
     has_parsing_error BOOLEAN, 
     is_deleted BOOLEAN, 
     raw_payload_size_bytes INT, 
@@ -104,6 +106,7 @@ WHEN NOT MATCHED THEN INSERT VALUES (
     {SCHEMA}.{STAGING_TABLE_NAME}.approx_creation_timestamp_millis, 
     {SCHEMA}.{STAGING_TABLE_NAME}.keys, 
     {SCHEMA}.{STAGING_TABLE_NAME}.new_image, 
+    {SCHEMA}.{STAGING_TABLE_NAME}.old_image, 
     {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error, 
     {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted, 
     {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes, 
@@ -139,6 +142,7 @@ def parse_dynamodb(dynamodb_json_string: str) -> Tuple:
             data.get("ApproximateCreationDateTime"),
             _ddb_to_json(data, "Keys"),
             _ddb_to_json(data, "NewImage"),
+            _ddb_to_json(data, "OldImage"),
             data.get("SizeBytes"),
             None,
         )
@@ -161,6 +165,7 @@ PARSE_DYNAMODB_UDF = udf(
             StructField("ApproximateCreationDateTime", LongType(), True),
             StructField("Keys", StringType(), True),
             StructField("NewImage", StringType(), True),
+            StructField("OldImage", StringType(), True),
             StructField("SizeBytes", IntegerType(), True),
             StructField("error", StringType(), True),
         ]
@@ -172,7 +177,7 @@ REDSHIFT_CONNECTION_OPTS = {
     "postactions": POSTACTIONS,
     "redshiftTmpDir": TMP_DIR,
     "useConnectionProperties": "true",
-    "dbtable": "tmp",
+    "dbtable": f"{SCHEMA}.{STAGING_TABLE_NAME}",
     "connectionName": args["RedshiftConnectionName"],
     "preactions": PREACTIONS,
 }
@@ -234,6 +239,7 @@ def processBatch(data_frame, batchId):
             ),
             col("dynamodb_decoded.Keys").alias("keys"),
             col("dynamodb_decoded.NewImage").alias("new_image"),
+            col("dynamodb_decoded.OldImage").alias("old_image"),
             # If there was a parsing error when converting the DynamoDB sub-payload,
             # we can indicate it here
             col("dynamodb_decoded.error").alias("error"),
