@@ -5,9 +5,10 @@
     "approx_creation_timestamp_millis": 1684189987356,
     "keys": "{\"column1\": \"3120\"}",
     "new_image": "{\"column1\": \"3120\", \"column2\": \"Updated!\"}",
+    "old_image": "{}",
     "error": null,
     "has_parsing_error": false,
     "is_deleted": false,
-    "raw_size_bytes": 189,
-    "raw": "{\"awsRegion\":\"us-gov-west-1\",\"eventID\":\"671fe3ec-f180-49fb-99c6-7c5ed0718e24\",\"eventName\":\"MODIFY\",\"userIdentity\":null,\"recordFormat\":\"application/json\",\"tableName\":\"streamer\",\"dynamodb\":{\"ApproximateCreationDateTime\":1684189987356,\"Keys\":{\"column1\":{\"S\":\"3120\"}},\"NewImage\":{\"column1\":{\"S\":\"3120\"},\"column2\":{\"S\":\"Updated!\"}},\"OldImage\":{\"column1\":{\"S\":\"3120\"},\"column2\":{\"L\":[{\"M\":{\"column5\":{\"M\":{\"column6\":{\"N\":\"4395\"}}},\"column4\":{\"N\":\"4395\"},\"column3\":{\"S\":\"4395\"}}},{\"M\":{\"column5\":{\"M\":{\"column6\":{\"N\":\"4395\"}}},\"column4\":{\"S\":\"670D0F1A-0BCF-4E53-BA9F-1CFD674EA21B\"},\"column3\":{\"S\":\"4395\"}}}]}},\"SizeBytes\":189},\"eventSource\":\"aws:dynamodb\"}"
+    "raw_payload_size_bytes": 189,
+    "raw_payload": "{\"awsRegion\":\"us-gov-west-1\",\"eventID\":\"671fe3ec-f180-49fb-99c6-7c5ed0718e24\",\"eventName\":\"MODIFY\",\"userIdentity\":null,\"recordFormat\":\"application/json\",\"tableName\":\"streamer\",\"dynamodb\":{\"ApproximateCreationDateTime\":1684189987356,\"Keys\":{\"column1\":{\"S\":\"3120\"}},\"NewImage\":{\"column1\":{\"S\":\"3120\"},\"column2\":{\"S\":\"Updated!\"}},\"OldImage\":{\"column1\":{\"S\":\"3120\"},\"column2\":{\"L\":[{\"M\":{\"column5\":{\"M\":{\"column6\":{\"N\":\"4395\"}}},\"column4\":{\"N\":\"4395\"},\"column3\":{\"S\":\"4395\"}}},{\"M\":{\"column5\":{\"M\":{\"column6\":{\"N\":\"4395\"}}},\"column4\":{\"S\":\"670D0F1A-0BCF-4E53-BA9F-1CFD674EA21B\"},\"column3\":{\"S\":\"4395\"}}}]}},\"SizeBytes\":189},\"eventSource\":\"aws:dynamodb\"}"
 }

@@ -1,0 +1,61 @@
+{
+    "awsRegion": "us-gov-west-1",
+    "eventID": "fed80872-9f53-416d-b998-20f8d1e33eec",
+    "eventName": "INSERT",
+    "userIdentity": null,
+    "recordFormat": "application/json",
+    "tableName": "streamer",
+    "dynamodb": {
+        "ApproximateCreationDateTime": 1684189640771,
+        "Keys": {
+            "column1": {
+                "S": "3120"
+            }
+        },
+        "NewImage": {
+            "column1": {
+                "S": "3120"
+            },
+            "column2": {
+                "L": [
+                    {
+                        "M": {
+                            "column5": {
+                                "M": {
+                                    "column6": {
+                                        "N": "4395"
+                                    }
+                                }
+                            },
+                            "column4": {
+                                "N": "4395"
+                            },
+                            "column3": {
+                                "S": "4395"
+                            }
+                        }
+                    },
+                    {
+                        "M": {
+                            "column5": {
+                                "M": {
+                                    "column6": {
+                                        "N": "4395"
+                                    }
+                                }
+                            },
+                            "column4": {
+                                "S": "670D0F1A-0BCF-4E53-BA9F-1CFD674EA21B"
+                            },
+                            "column3": {
+                                "S": "4395"
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+        "SizeBytes": 163
+    },
+    "eventSource": "aws:dynamodb"
+}

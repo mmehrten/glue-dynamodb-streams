@@ -1,0 +1,26 @@
+{
+    "awsRegion": "us-gov-west-1",
+    "eventID": "492da627-7d69-4168-a6f0-534674ea5eba",
+    "eventName": "REMOVE",
+    "userIdentity": null,
+    "recordFormat": "application/json",
+    "tableName": "streamer",
+    "dynamodb": {
+        "ApproximateCreationDateTime": 1684190049329,
+        "Keys": {
+            "column1": {
+                "S": "3120"
+            }
+        },
+        "OldImage": {
+            "column1": {
+                "S": "3120"
+            },
+            "column2": {
+                "S": "Updated!"
+            }
+        },
+        "SizeBytes": 37
+    },
+    "eventSource": "aws:dynamodb"
+}
