@@ -57,7 +57,7 @@ sc = SparkContext()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
 job = Job(glueContext)
-job.init(JOB_NAME, args)
+job.init(JOB_NAME, getResolvedOptions(sys.argv, []))
 
 
 # These actions get run at the beginning of each microbatch, ensuring that a fresh Glue table exists
