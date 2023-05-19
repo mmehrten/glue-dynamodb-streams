@@ -163,6 +163,7 @@ def parse_dynamodb(dynamodb_json_string: str) -> Tuple:
             None,
             None,
             None,
+            None,
             json.dumps(
                 {"error": str(e), "data": dynamodb_json_string}, cls=DecimalEncoder
             ),
@@ -202,8 +203,10 @@ KINESIS_CONNECTION_OPTS = {
     "classification": "json",
     "startingPosition": "earliest",
     "inferSchema": "true",
-    "awsSTSRoleARN": KINESIS_IAM_ROLE,
 }
+# Allow setting cross-account role
+if KINESIS_IAM_ROLE:
+    KINESIS_CONNECTION_OPTS["awsSTSRoleARN"] = KINESIS_IAM_ROLE
 
 
 # Actual Spark Streaming method used to process each microbatch
@@ -211,17 +214,22 @@ def processBatch(data_frame, batchId):
     # If this microbatch is empty, do nothing
     if data_frame.count() == 0:
         return
-
+    # This uses a magic Glue column named
+    # "$json$data_infer_schema$_temporary$" which is the input column
+    # when using inferred schemas from JSON data. Its type is a STRING,
+    # so we simply do a from_json to convert it into a true structure. In some
+    # Glue releases this is "$json$data_infer_schema$.temporary$", so we allow both forms
+    assert (
+        data_frame.schema and len(data_frame.schema) == 1
+    ), f"Invalid input schema: {data_frame.schema}"
+    root_column = col(f"`{data_frame.schema[0].name}`")
     data_frame = (
         # First, parse the input JSON data from the Kinesis stream
-        # into a top-level schema. This uses a magic Glue column named
-        # "$json$data_infer_schema$_temporary$" which is the input column
-        # when using inferred schemas from JSON data. Its type is a STRING,
-        # so we simply do a from_json to convert it into a true structure
+        # into a top-level schema.
         data_frame.withColumn(
             "data",
             from_json(
-                col("$json$data_infer_schema$_temporary$"),
+                root_column,
                 # This struct matches the Kinesis Stream payload format
                 StructType(
                     [
@@ -239,9 +247,7 @@ def processBatch(data_frame, batchId):
         )
         # Unnest the data struct we created, and rename the magic Glue column name to a more
         # sane output column "raw_payload"
-        .select(
-            "data.*", col("$json$data_infer_schema$_temporary$").alias("raw_payload")
-        )
+        .select("data.*", root_column.alias("raw_payload"))
         # Use the UDF to parse the dynamodb sub-payload into human-readable JSON
         .withColumn("dynamodb_decoded", PARSE_DYNAMODB_UDF("dynamodb"))
         # Reformat to the output structure we want
@@ -306,13 +312,13 @@ def processBatch(data_frame, batchId):
 
 
 # Finally, run the job!
-kinesis_gdf = glueContext.create_data_frame.from_options(
+kinesis_df = glueContext.create_data_frame.from_options(
     connection_type="kinesis",
     connection_options=KINESIS_CONNECTION_OPTS,
     transformation_ctx="kinesis_tfx_node",
 )
 glueContext.forEachBatch(
-    frame=kinesis_gdf,
+    frame=kinesis_df,
     batch_function=processBatch,
     options={
         "windowSize": "100 seconds",
