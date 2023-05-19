@@ -17,7 +17,7 @@ The following configuration options are required, and passed as parameters to th
  * `RedshiftTableName` - The name of the table to write to in Redshift
  * `RedshiftStagingTableName` - The name of the staging table to use in Redshift when upserting data
  * `RedshiftSchema` - The schema name to use in Redshift containing the tables
- * `KinesisRoleARN` - The role ARN to use to access the Kinesis stream when using cross-account access
+ * `KinesisRoleARN` - The role ARN to use to access the Kinesis stream when using cross-account access, should be empty string when not using cross-account roles
 
 Note that when running in a private subnet / VPC without internet access, the following endpoints must be accessible:
 
