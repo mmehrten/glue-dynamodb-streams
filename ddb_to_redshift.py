@@ -33,33 +33,26 @@ class DecimalEncoder(json.JSONEncoder):
         return super(DecimalEncoder, self).default(o)
 
 
+def get_glue_env_var(key, default=None):
+    if f"--{key}" in sys.argv:
+        return getResolvedOptions(sys.argv, [key])[key]
+    else:
+        return default
+
+
 # Glue boilerplate
-args = getResolvedOptions(
-    sys.argv,
-    [
-        "JOB_NAME",
-        "StreamARN",
-        "OutputMode",
-        "RedshiftConnectionName",
-        "S3OutputPath",
-        "RedshiftTableName",
-        "RedshiftStagingTableName",
-        "RedshiftSchema",
-        "KinesisRoleARN",
-    ],
-)
 # Constants used throughout the script
-JOB_NAME = args["JOB_NAME"]
-TMP_DIR = args["TempDir"]
-TABLE_NAME = args["RedshiftTableName"]
-STAGING_TABLE_NAME = args["RedshiftStagingTableName"]
-SCHEMA = args["RedshiftSchema"]
-KINESIS_STREAM = args["StreamARN"]
-KINESIS_IAM_ROLE = args["KinesisRoleARN"]
-REDSHIFT_CONNECTION_NAME = args["RedshiftConnectionName"]
-S3_OUTPUT_PATH = args["S3OutputPath"]
+JOB_NAME = get_glue_env_var("JOB_NAME")
+TMP_DIR = get_glue_env_var("TempDir")
+TABLE_NAME = get_glue_env_var("RedshiftTableName")
+STAGING_TABLE_NAME = get_glue_env_var("RedshiftStagingTableName")
+SCHEMA = get_glue_env_var("RedshiftSchema")
+KINESIS_STREAM = get_glue_env_var("StreamARN")
+KINESIS_IAM_ROLE = get_glue_env_var("KinesisRoleARN")
+REDSHIFT_CONNECTION_NAME = get_glue_env_var("RedshiftConnectionName")
+S3_OUTPUT_PATH = get_glue_env_var("S3OutputPath")
 DESERIALIZER = TypeDeserializer()
-OUTPUT_MODE = OutputMode[args["OutputMode"].upper()]
+OUTPUT_MODE = OutputMode[get_glue_env_var("OutputMode").upper()]
 sc = SparkContext()
 glueContext = GlueContext(sc)
 spark = glueContext.spark_session
