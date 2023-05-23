@@ -64,60 +64,62 @@ job.init(JOB_NAME, getResolvedOptions(sys.argv, []))
 # for staging data
 # Note: The SQL for pre/post actions can't include comments (as they must be single-line and newlines are removed below)
 PREACTIONS = f"""
+BEGIN;
 CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE_NAME} (
-    event_id VARCHAR, 
-    last_event_name VARCHAR, 
-    table_name VARCHAR, 
-    approx_creation_timestamp_millis BIGINT, 
-    keys VARCHAR, 
-    new_image SUPER, 
-    old_image SUPER, 
-    error VARCHAR, 
-    has_parsing_error BOOLEAN, 
-    is_deleted BOOLEAN, 
-    raw_payload_size_bytes INT, 
-    raw_payload VARCHAR(max)
-); 
-DROP TABLE IF EXISTS {SCHEMA}.{STAGING_TABLE_NAME};
-CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
-    event_id VARCHAR, 
-    last_event_name VARCHAR, 
-    table_name VARCHAR, 
-    approx_creation_timestamp_millis BIGINT, 
-    keys VARCHAR, 
-    new_image SUPER, 
-    old_image SUPER, 
-    error VARCHAR, 
-    has_parsing_error BOOLEAN, 
-    is_deleted BOOLEAN, 
-    raw_payload_size_bytes INT, 
+    event_id VARCHAR,
+    last_event_name VARCHAR,
+    table_name VARCHAR,
+    approx_creation_timestamp_millis BIGINT,
+    keys VARCHAR,
+    new_image SUPER,
+    old_image SUPER,
+    error VARCHAR,
+    has_parsing_error BOOLEAN,
+    is_deleted BOOLEAN,
+    raw_payload_size_bytes INT,
     raw_payload VARCHAR(max)
 );
+DROP TABLE IF EXISTS {SCHEMA}.{STAGING_TABLE_NAME};
+CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
+    event_id VARCHAR,
+    last_event_name VARCHAR,
+    table_name VARCHAR,
+    approx_creation_timestamp_millis BIGINT,
+    keys VARCHAR,
+    new_image SUPER,
+    old_image SUPER,
+    error VARCHAR,
+    has_parsing_error BOOLEAN,
+    is_deleted BOOLEAN,
+    raw_payload_size_bytes INT,
+    raw_payload VARCHAR(max)
+);
+END;
 """
 
 # These actions run at the end of each microbatch, after the data has been loaded into the
 # staging table it is merged into the main table
 POSTACTIONS = f"""
-BEGIN; 
-MERGE INTO {SCHEMA}.{TABLE_NAME} USING {SCHEMA}.{STAGING_TABLE_NAME} 
-    ON {SCHEMA}.{TABLE_NAME}.keys = {SCHEMA}.{STAGING_TABLE_NAME}.keys 
-WHEN MATCHED THEN UPDATE SET keys = {SCHEMA}.{STAGING_TABLE_NAME}.keys  
+BEGIN;
+MERGE INTO {SCHEMA}.{TABLE_NAME} USING {SCHEMA}.{STAGING_TABLE_NAME}
+    ON {SCHEMA}.{TABLE_NAME}.keys = {SCHEMA}.{STAGING_TABLE_NAME}.keys
+WHEN MATCHED THEN UPDATE SET keys = {SCHEMA}.{STAGING_TABLE_NAME}.keys
 WHEN NOT MATCHED THEN INSERT VALUES (
-    {SCHEMA}.{STAGING_TABLE_NAME}.event_id, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.last_event_name, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.table_name, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.approx_creation_timestamp_millis, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.keys, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.new_image, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.old_image, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.error, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted, 
-    {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes, 
+    {SCHEMA}.{STAGING_TABLE_NAME}.event_id,
+    {SCHEMA}.{STAGING_TABLE_NAME}.last_event_name,
+    {SCHEMA}.{STAGING_TABLE_NAME}.table_name,
+    {SCHEMA}.{STAGING_TABLE_NAME}.approx_creation_timestamp_millis,
+    {SCHEMA}.{STAGING_TABLE_NAME}.keys,
+    {SCHEMA}.{STAGING_TABLE_NAME}.new_image,
+    {SCHEMA}.{STAGING_TABLE_NAME}.old_image,
+    {SCHEMA}.{STAGING_TABLE_NAME}.error,
+    {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error,
+    {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted,
+    {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes,
     {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload
-); 
-DROP TABLE {SCHEMA}.{STAGING_TABLE_NAME}; 
-END
+);
+DROP TABLE {SCHEMA}.{STAGING_TABLE_NAME};
+END;
 """
 
 # Helper methods to convert DynamoDB syntax data into true JSON data
@@ -177,16 +179,22 @@ PARSE_DYNAMODB_UDF = udf(
     ),
 )
 
+
+def _trim_actions(actions: str) -> str:
+    """Remove newlines and trim whitespace for a Redshift action."""
+    return " ".join(i.strip() for i in actions.split("\n") if i.strip())
+
+
 # Connection options for S3 and Redshift modes
 REDSHIFT_CONNECTION_OPTS = {
     # Note: Redshift preactions / postactions can't contain newline characters:
     # https://repost.aws/knowledge-center/sql-commands-redshift-glue-job
-    "postactions": POSTACTIONS.replace("\n", ""),
+    "postactions": _trim_actions(POSTACTIONS),
     "redshiftTmpDir": TMP_DIR,
     "useConnectionProperties": "true",
     "dbtable": f"{SCHEMA}.{STAGING_TABLE_NAME}",
     "connectionName": REDSHIFT_CONNECTION_NAME,
-    "preactions": PREACTIONS.replace("\n", ""),
+    "preactions": _trim_actions(PREACTIONS),
 }
 S3_CONNECTION_OPTS = {"path": S3_OUTPUT_PATH}
 # NOTE: For cross-account Kinesis streams, this needs the role ARN to assume
