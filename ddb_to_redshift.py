@@ -103,7 +103,19 @@ POSTACTIONS = f"""
 BEGIN;
 MERGE INTO {SCHEMA}.{TABLE_NAME} USING {SCHEMA}.{STAGING_TABLE_NAME}
     ON {SCHEMA}.{TABLE_NAME}.keys = {SCHEMA}.{STAGING_TABLE_NAME}.keys
-WHEN MATCHED THEN UPDATE SET keys = {SCHEMA}.{STAGING_TABLE_NAME}.keys
+WHEN MATCHED THEN UPDATE SET
+    event_id = {SCHEMA}.{STAGING_TABLE_NAME}.event_id,
+    last_event_name = {SCHEMA}.{STAGING_TABLE_NAME}.last_event_name,
+    table_name = {SCHEMA}.{STAGING_TABLE_NAME}.table_name,
+    approx_creation_timestamp_millis = {SCHEMA}.{STAGING_TABLE_NAME}.approx_creation_timestamp_millis,
+    new_image = {SCHEMA}.{STAGING_TABLE_NAME}.new_image,
+    old_image = {SCHEMA}.{STAGING_TABLE_NAME}.old_image,
+    error = {SCHEMA}.{STAGING_TABLE_NAME}.error,
+    has_parsing_error = {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error,
+    is_deleted = {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted,
+    raw_payload_size_bytes = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes,
+    raw_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload
+
 WHEN NOT MATCHED THEN INSERT VALUES (
     {SCHEMA}.{STAGING_TABLE_NAME}.event_id,
     {SCHEMA}.{STAGING_TABLE_NAME}.last_event_name,
