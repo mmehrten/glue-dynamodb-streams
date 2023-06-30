@@ -1,7 +1,7 @@
 import decimal
 import json
 import sys
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from awsglue import DynamicFrame
 from awsglue.context import GlueContext
@@ -11,13 +11,14 @@ from boto3.dynamodb.types import TypeDeserializer
 from pyspark.context import SparkContext
 from pyspark.sql.functions import (
     col,
-    from_json,
-    input_file_name,
+    current_timestamp,
     isnull,
+    length,
     lit,
     struct,
     to_json,
     udf,
+    unix_timestamp,
 )
 from pyspark.sql.types import StringType, StructField, StructType
 
@@ -49,23 +50,22 @@ SCHEMA = get_glue_env_var("RedshiftSchema")
 REDSHIFT_CONNECTION_NAME = get_glue_env_var("RedshiftConnectionName")
 S3_DDB_EXPORT_PATH = get_glue_env_var("S3DynamoDbExportPath")
 S3_DATA_PATH = f"{S3_DDB_EXPORT_PATH}/data/"
-S3_JOIN_PATH = get_glue_env_var("S3JoinPath")
 JOB_RUN_ID = get_glue_env_var("JOB_RUN_ID")
 DDB_TABLE_NAME = get_glue_env_var("DynamoDbTableName")
 DDB_TABLE_KEYS = get_glue_env_var("DynamoDbTableKeys")
+REDSHIFT_IAM_ROLE = get_glue_env_var("RedshiftIAMRole")
 
 assert all(
     (
         DDB_TABLE_KEYS,
         DDB_TABLE_NAME,
         S3_DDB_EXPORT_PATH,
-        S3_JOIN_PATH,
         REDSHIFT_CONNECTION_NAME,
         SCHEMA,
         STAGING_TABLE_NAME,
         TABLE_NAME,
     )
-), "Parameters RedshiftTableName, RedshiftStagingTableName, RedshiftSchema, RedshiftConnectionName, S3DynamoDbExportPath, DynamoDbTableName, DynamoDbTableKeys, S3JoinPath are required."
+), "Parameters RedshiftTableName, RedshiftStagingTableName, RedshiftSchema, RedshiftConnectionName, S3DynamoDbExportPath, DynamoDbTableName, DynamoDbTableKeys are required."
 # Clean up user input to avoid trailing spaces
 DDB_TABLE_KEYS = [i.strip() for i in DDB_TABLE_KEYS.split(",") if i.strip()]
 
@@ -95,9 +95,7 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE_NAME} (
     has_parsing_error BOOLEAN,
     is_deleted BOOLEAN,
     raw_payload_size_bytes INT,
-    raw_payload VARCHAR(max),
-    s3_uri VARCHAR,
-    raw_s3_payload SUPER
+    raw_payload VARCHAR(max)
 );
 DROP TABLE IF EXISTS {SCHEMA}.{STAGING_TABLE_NAME};
 CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
@@ -112,9 +110,7 @@ CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
     has_parsing_error BOOLEAN,
     is_deleted BOOLEAN,
     raw_payload_size_bytes INT,
-    raw_payload VARCHAR(max),
-    s3_uri VARCHAR,
-    raw_s3_payload SUPER
+    raw_payload VARCHAR(max)
 );
 END;
 """
@@ -136,9 +132,7 @@ WHEN MATCHED THEN UPDATE SET
     has_parsing_error = {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error,
     is_deleted = {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted,
     raw_payload_size_bytes = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes,
-    raw_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload,
-    s3_uri = {SCHEMA}.{STAGING_TABLE_NAME}.s3_uri,
-    raw_s3_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_s3_payload
+    raw_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload
 
 WHEN NOT MATCHED THEN INSERT VALUES (
     {SCHEMA}.{STAGING_TABLE_NAME}.event_id,
@@ -152,9 +146,7 @@ WHEN NOT MATCHED THEN INSERT VALUES (
     {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error,
     {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted,
     {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes,
-    {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload,
-    {SCHEMA}.{STAGING_TABLE_NAME}.s3_uri,
-    {SCHEMA}.{STAGING_TABLE_NAME}.raw_s3_payload
+    {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload
 );
 DROP TABLE {SCHEMA}.{STAGING_TABLE_NAME};
 END;
@@ -162,7 +154,7 @@ END;
 
 # Helper methods to convert DynamoDB syntax data into true JSON data
 # See the raw and converted data examples in ./parsed-data/
-def _ddb_to_json(data: Dict, prop: str) -> Dict:
+def _ddb_to_json(data: Dict, prop: str) -> Optional[Dict]:
     """Convert DynamoDB encoded data into normal JSON.
 
     :param data: A mapping of {"key": {dynamo db encoded data}}
@@ -183,7 +175,8 @@ def parse_dynamodb(dynamodb_json_string: str) -> Tuple:
     try:
         data = json.loads(dynamodb_json_string)
         record = _ddb_to_json(data, "Item")
-        key = json.dumps({k: record[k] for k in DDB_TABLE_KEYS})
+        # Create the Key definition manually using the configured keys in the Job parameters
+        key = {k: record[k] for k in DDB_TABLE_KEYS}
         return (
             json.dumps(key, cls=DecimalEncoder),
             json.dumps(record, cls=DecimalEncoder),
@@ -226,7 +219,7 @@ REDSHIFT_CONNECTION_OPTS = {
     "dbtable": f"{SCHEMA}.{STAGING_TABLE_NAME}",
     "connectionName": REDSHIFT_CONNECTION_NAME,
     "preactions": _trim_actions(PREACTIONS),
-    "aws_iam_role": "arn:aws-us-gov:iam::053633994311:role/core-zwy2.iam.role.redshift",
+    "aws_iam_role": REDSHIFT_IAM_ROLE,
 }
 
 
@@ -240,9 +233,13 @@ data_frame = (
     # Reformat to the output structure we want
     .select(
         lit(JOB_RUN_ID).alias("event_id"),
-        lit("bulk_load").alias("last_event_name"),
+        # Use BULK_LOAD to differ from streaming insert/remove/update operations
+        lit("BULK_LOAD").alias("last_event_name"),
         lit(DDB_TABLE_NAME).alias("table_name"),
-        lit(0).alias("approx_creation_timestamp_millis"),  # TODO: CUrrent ts millis
+        # unix_timestamp is in seconds, convert to millis
+        (1000 * unix_timestamp(current_timestamp())).alias(
+            "approx_creation_timestamp_millis"
+        ),
         col("dynamodb_decoded.Keys").alias("keys"),
         col("dynamodb_decoded.NewImage").alias("new_image"),
         lit("{}").alias("old_image"),
@@ -254,30 +251,11 @@ data_frame = (
         # be used and the new_image column will be NULL
         lit(False).alias("is_deleted"),
         # Store the original raw data as well in case it's useful for troubleshooting
-        lit(-1).alias("raw_payload_size_bytes"),
+        (4 * length("raw_payload")).alias("raw_payload_size_bytes"),  # Estimate
         col("raw_payload"),
     )
 )
-logger.info(f"Schema: {data_frame.schema}")
-
-other_s3_df = (
-    spark.read.format("json")
-    .load(S3_JOIN_PATH)
-    .withColumn("raw_s3_payload", to_json(struct("*")))
-    .withColumn("s3_uri", input_file_name())
-    .select("s3_uri", "raw_s3_payload")
-)
-
-data_frame = data_frame.withColumn("ddb", from_json("new_image", "s3_uri STRING"))
-
-ddb_with_s3 = data_frame.join(
-    other_s3_df, other_s3_df.s3_uri == data_frame.ddb.s3_uri, "left"
-).drop("ddb")
-logger.info(f"Schema: {ddb_with_s3.schema}")
-
-s3_microbatch_node = DynamicFrame.fromDF(ddb_with_s3, glueContext, "from_data_frame")
-logger.info(f"Schema: {s3_microbatch_node.schema()}")
-
+s3_microbatch_node = DynamicFrame.fromDF(data_frame, glueContext, "from_data_frame")
 glueContext.write_dynamic_frame.from_options(
     frame=s3_microbatch_node,
     connection_type="redshift",

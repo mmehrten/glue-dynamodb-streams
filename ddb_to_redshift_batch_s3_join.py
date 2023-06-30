@@ -11,15 +11,18 @@ from boto3.dynamodb.types import TypeDeserializer
 from pyspark.context import SparkContext
 from pyspark.sql.functions import (
     col,
+    current_timestamp,
     from_json,
+    input_file_name,
     isnull,
+    length,
     lit,
-    row_number,
+    struct,
+    to_json,
     udf,
-    when,
+    unix_timestamp,
 )
-from pyspark.sql.types import IntegerType, LongType, StringType, StructField, StructType
-from pyspark.sql.window import Window
+from pyspark.sql.types import StringType, StructField, StructType
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -32,8 +35,9 @@ class DecimalEncoder(json.JSONEncoder):
 
 
 def get_glue_env_var(key, default=None):
+    arg_key = key if key != "JOB_RUN_ID" else "JOB_NAME"
     if f"--{key}" in sys.argv:
-        return getResolvedOptions(sys.argv, [key])[key]
+        return getResolvedOptions(sys.argv, [arg_key])[key]
     else:
         return default
 
@@ -45,11 +49,30 @@ TMP_DIR = get_glue_env_var("TempDir")
 TABLE_NAME = get_glue_env_var("RedshiftTableName")
 STAGING_TABLE_NAME = get_glue_env_var("RedshiftStagingTableName")
 SCHEMA = get_glue_env_var("RedshiftSchema")
-KINESIS_STREAM = get_glue_env_var("StreamARN")
-KINESIS_IAM_ROLE = get_glue_env_var("KinesisRoleARN")
 REDSHIFT_CONNECTION_NAME = get_glue_env_var("RedshiftConnectionName")
+S3_DDB_EXPORT_PATH = get_glue_env_var("S3DynamoDbExportPath")
+S3_DATA_PATH = f"{S3_DDB_EXPORT_PATH}/data/"
 S3_JOIN_PATH = get_glue_env_var("S3JoinPath")
+JOB_RUN_ID = get_glue_env_var("JOB_RUN_ID")
+DDB_TABLE_NAME = get_glue_env_var("DynamoDbTableName")
+DDB_TABLE_KEYS = get_glue_env_var("DynamoDbTableKeys")
 REDSHIFT_IAM_ROLE = get_glue_env_var("RedshiftIAMRole")
+
+assert all(
+    (
+        DDB_TABLE_KEYS,
+        DDB_TABLE_NAME,
+        S3_DDB_EXPORT_PATH,
+        S3_JOIN_PATH,
+        REDSHIFT_CONNECTION_NAME,
+        SCHEMA,
+        STAGING_TABLE_NAME,
+        TABLE_NAME,
+    )
+), "Parameters RedshiftTableName, RedshiftStagingTableName, RedshiftSchema, RedshiftConnectionName, S3DynamoDbExportPath, DynamoDbTableName, DynamoDbTableKeys, S3JoinPath are required."
+# Clean up user input to avoid trailing spaces
+DDB_TABLE_KEYS = [i.strip() for i in DDB_TABLE_KEYS.split(",") if i.strip()]
+
 DESERIALIZER = TypeDeserializer()
 sc = SparkContext()
 glueContext = GlueContext(sc)
@@ -76,7 +99,9 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE_NAME} (
     has_parsing_error BOOLEAN,
     is_deleted BOOLEAN,
     raw_payload_size_bytes INT,
-    raw_payload VARCHAR(max)
+    raw_payload VARCHAR(max),
+    s3_uri VARCHAR,
+    raw_s3_payload SUPER
 );
 DROP TABLE IF EXISTS {SCHEMA}.{STAGING_TABLE_NAME};
 CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
@@ -91,7 +116,9 @@ CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
     has_parsing_error BOOLEAN,
     is_deleted BOOLEAN,
     raw_payload_size_bytes INT,
-    raw_payload VARCHAR(max)
+    raw_payload VARCHAR(max),
+    s3_uri VARCHAR,
+    raw_s3_payload SUPER
 );
 END;
 """
@@ -113,7 +140,9 @@ WHEN MATCHED THEN UPDATE SET
     has_parsing_error = {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error,
     is_deleted = {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted,
     raw_payload_size_bytes = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes,
-    raw_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload
+    raw_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload,
+    s3_uri = {SCHEMA}.{STAGING_TABLE_NAME}.s3_uri,
+    raw_s3_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_s3_payload
 
 WHEN NOT MATCHED THEN INSERT VALUES (
     {SCHEMA}.{STAGING_TABLE_NAME}.event_id,
@@ -127,7 +156,9 @@ WHEN NOT MATCHED THEN INSERT VALUES (
     {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error,
     {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted,
     {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes,
-    {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload
+    {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload,
+    {SCHEMA}.{STAGING_TABLE_NAME}.s3_uri,
+    {SCHEMA}.{STAGING_TABLE_NAME}.raw_s3_payload
 );
 DROP TABLE {SCHEMA}.{STAGING_TABLE_NAME};
 END;
@@ -135,15 +166,15 @@ END;
 
 # Helper methods to convert DynamoDB syntax data into true JSON data
 # See the raw and converted data examples in ./parsed-data/
-def _ddb_to_json(data: Dict, prop: str) -> Optional[str]:
+def _ddb_to_json(data: Dict, prop: str) -> Optional[Dict]:
     """Convert DynamoDB encoded data into normal JSON.
 
     :param data: A mapping of {"key": {dynamo db encoded data}}
     :param prop: The key to convert from the input data (e.g. Keys or NewImage from DynamoDB Streams)
     """
     if prop not in data:
-        return "{}"
-    return json.dumps(DESERIALIZER.deserialize({"M": data[prop]}), cls=DecimalEncoder)
+        return {}
+    return DESERIALIZER.deserialize({"M": data[prop]})
 
 
 def parse_dynamodb(dynamodb_json_string: str) -> Tuple:
@@ -155,19 +186,16 @@ def parse_dynamodb(dynamodb_json_string: str) -> Tuple:
     """
     try:
         data = json.loads(dynamodb_json_string)
+        record = _ddb_to_json(data, "Item")
+        # Create the Key definition manually using the configured keys in the Job parameters
+        key = {k: record[k] for k in DDB_TABLE_KEYS}
         return (
-            data.get("ApproximateCreationDateTime"),
-            _ddb_to_json(data, "Keys"),
-            _ddb_to_json(data, "NewImage"),
-            _ddb_to_json(data, "OldImage"),
-            data.get("SizeBytes"),
+            json.dumps(key, cls=DecimalEncoder),
+            json.dumps(record, cls=DecimalEncoder),
             None,
         )
     except Exception as e:
         return (
-            None,
-            None,
-            None,
             None,
             None,
             json.dumps(
@@ -180,11 +208,8 @@ PARSE_DYNAMODB_UDF = udf(
     parse_dynamodb,
     StructType(
         [
-            StructField("ApproximateCreationDateTime", LongType(), True),
             StructField("Keys", StringType(), True),
             StructField("NewImage", StringType(), True),
-            StructField("OldImage", StringType(), True),
-            StructField("SizeBytes", IntegerType(), True),
             StructField("error", StringType(), True),
         ]
     ),
@@ -208,119 +233,59 @@ REDSHIFT_CONNECTION_OPTS = {
     "preactions": _trim_actions(PREACTIONS),
     "aws_iam_role": REDSHIFT_IAM_ROLE,
 }
-# NOTE: For cross-account Kinesis streams, this needs the role ARN to assume
-KINESIS_CONNECTION_OPTS = {
-    "typeOfData": "kinesis",
-    "streamARN": KINESIS_STREAM,
-    "classification": "json",
-    "startingPosition": "earliest",
-    "inferSchema": "true",
-}
-# Allow setting cross-account role
-if KINESIS_IAM_ROLE:
-    KINESIS_CONNECTION_OPTS["awsSTSRoleARN"] = KINESIS_IAM_ROLE
 
 
-# Actual Spark Streaming method used to process each microbatch
-def processBatch(data_frame, batchId):
-    # If this microbatch is empty, do nothing
-    if data_frame.count() == 0:
-        return
-    # This uses a magic Glue column named
-    # "$json$data_infer_schema$_temporary$" which is the input column
-    # when using inferred schemas from JSON data. Its type is a STRING,
-    # so we simply do a from_json to convert it into a true structure. In some
-    # Glue releases this is "$json$data_infer_schema$.temporary$", so we allow both forms
-    assert (
-        data_frame.schema and len(data_frame.schema) == 1
-    ), f"Invalid input schema: {data_frame.schema}"
-    root_column = col(f"`{data_frame.schema[0].name}`")
-    data_frame = (
-        # First, parse the input JSON data from the Kinesis stream
-        # into a top-level schema.
-        data_frame.withColumn(
-            "data",
-            from_json(
-                root_column,
-                # This struct matches the Kinesis Stream payload format
-                StructType(
-                    [
-                        StructField("awsRegion", StringType(), False),
-                        StructField("eventID", StringType(), False),
-                        StructField("eventName", StringType(), False),
-                        StructField("userIdentity", StringType(), False),
-                        StructField("recordFormat", StringType(), False),
-                        StructField("tableName", StringType(), False),
-                        StructField("dynamodb", StringType(), False),
-                        StructField("eventSource", StringType(), False),
-                    ]
-                ),
-            ),
-        )
-        # Unnest the data struct we created, and rename the magic Glue column name to a more
-        # sane output column "raw_payload"
-        .select("data.*", root_column.alias("raw_payload"))
-        # Use the UDF to parse the dynamodb sub-payload into human-readable JSON
-        .withColumn("dynamodb_decoded", PARSE_DYNAMODB_UDF("dynamodb"))
-        # Reformat to the output structure we want
-        .select(
-            col("eventID").alias("event_id"),
-            col("eventName").alias("last_event_name"),
-            col("tableName").alias("table_name"),
-            col("dynamodb_decoded.ApproximateCreationDateTime").alias(
-                "approx_creation_timestamp_millis"
-            ),
-            col("dynamodb_decoded.Keys").alias("keys"),
-            col("dynamodb_decoded.NewImage").alias("new_image"),
-            col("dynamodb_decoded.OldImage").alias("old_image"),
-            # If there was a parsing error when converting the DynamoDB sub-payload,
-            # we can indicate it here
-            col("dynamodb_decoded.error").alias("error"),
-            (~isnull("dynamodb_decoded.error")).alias("has_parsing_error"),
-            # If the event is a REMOVE event, we can mark this row as deleted as it will no longer
-            # be used and the new_image column will be NULL
-            (when(col("eventName") == "REMOVE", True).otherwise(lit(False))).alias(
-                "is_deleted"
-            ),
-            # Store the original raw data as well in case it's useful for troubleshooting
-            col("dynamodb_decoded.SizeBytes").alias("raw_payload_size_bytes"),
-            col("raw_payload"),
-        )
-        # Select only the latest unique row from this microbatch for each key
-        .withColumn(
-            "sequence_id",
-            row_number().over(
-                Window.partitionBy("keys").orderBy(
-                    col("approx_creation_timestamp_millis").desc()
-                )
-            ),
-        )
-        .filter("sequence_id == 1")
-        .drop("sequence_id")
+data_frame = (
+    spark.read.format("json")
+    .load(S3_DATA_PATH)
+    .withColumn("raw_payload", to_json(struct("*")))
+    .select("raw_payload")
+    # Use the UDF to parse the dynamodb sub-payload into human-readable JSON
+    .withColumn("dynamodb_decoded", PARSE_DYNAMODB_UDF("raw_payload"))
+    # Reformat to the output structure we want
+    .select(
+        lit(JOB_RUN_ID).alias("event_id"),
+        # Use BULK_LOAD to differ from streaming insert/remove/update operations
+        lit("BULK_LOAD").alias("last_event_name"),
+        lit(DDB_TABLE_NAME).alias("table_name"),
+        # unix_timestamp is in seconds, convert to millis
+        (1000 * unix_timestamp(current_timestamp())).alias(
+            "approx_creation_timestamp_millis"
+        ),
+        col("dynamodb_decoded.Keys").alias("keys"),
+        col("dynamodb_decoded.NewImage").alias("new_image"),
+        lit("{}").alias("old_image"),
+        # If there was a parsing error when converting the DynamoDB sub-payload,
+        # we can indicate it here
+        col("dynamodb_decoded.error").alias("error"),
+        (~isnull("dynamodb_decoded.error")).alias("has_parsing_error"),
+        # If the event is a REMOVE event, we can mark this row as deleted as it will no longer
+        # be used and the new_image column will be NULL
+        lit(False).alias("is_deleted"),
+        # Store the original raw data as well in case it's useful for troubleshooting
+        (4 * length("raw_payload")).alias("raw_payload_size_bytes"),  # Estimate
+        col("raw_payload"),
     )
-    s3_microbatch_node = DynamicFrame.fromDF(
-        data_frame, glueContext, "from_data_frame"
-    )
-    glueContext.write_dynamic_frame.from_options(
-        frame=s3_microbatch_node,
-        connection_type="redshift",
-        connection_options=REDSHIFT_CONNECTION_OPTS,
-        transformation_ctx="s3_tfx_node",
-    )
-
-
-# Finally, run the job!
-kinesis_df = glueContext.create_data_frame.from_options(
-    connection_type="kinesis",
-    connection_options=KINESIS_CONNECTION_OPTS,
-    transformation_ctx="kinesis_tfx_node",
 )
-glueContext.forEachBatch(
-    frame=kinesis_df,
-    batch_function=processBatch,
-    options={
-        "windowSize": "100 seconds",
-        "checkpointLocation": TMP_DIR + "/" + JOB_NAME + "/checkpoint/",
-    },
+other_s3_df = (
+    spark.read.format("json")
+    .load(S3_JOIN_PATH)
+    .withColumn("raw_s3_payload", to_json(struct("*")))
+    .withColumn("s3_uri", input_file_name())
+    .select("s3_uri", "raw_s3_payload")
 )
+data_frame = data_frame.withColumn("ddb", from_json("new_image", "s3_uri STRING"))
+ddb_with_s3 = (
+    data_frame.join(other_s3_df, other_s3_df.s3_uri == data_frame.ddb.s3_uri, "left")
+    .na.fill("{}", ["raw_s3_payload", "new_image", "old_image"])
+    .drop("ddb")
+)
+s3_microbatch_node = DynamicFrame.fromDF(ddb_with_s3, glueContext, "from_data_frame")
+glueContext.write_dynamic_frame.from_options(
+    frame=s3_microbatch_node,
+    connection_type="redshift",
+    connection_options=REDSHIFT_CONNECTION_OPTS,
+    transformation_ctx="s3_tfx_node",
+)
+
 job.commit()

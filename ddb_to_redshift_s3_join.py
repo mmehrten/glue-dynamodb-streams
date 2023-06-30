@@ -12,9 +12,12 @@ from pyspark.context import SparkContext
 from pyspark.sql.functions import (
     col,
     from_json,
+    input_file_name,
     isnull,
     lit,
     row_number,
+    struct,
+    to_json,
     udf,
     when,
 )
@@ -76,7 +79,9 @@ CREATE TABLE IF NOT EXISTS {SCHEMA}.{TABLE_NAME} (
     has_parsing_error BOOLEAN,
     is_deleted BOOLEAN,
     raw_payload_size_bytes INT,
-    raw_payload VARCHAR(max)
+    raw_payload VARCHAR(max),
+    s3_uri VARCHAR,
+    raw_s3_payload SUPER
 );
 DROP TABLE IF EXISTS {SCHEMA}.{STAGING_TABLE_NAME};
 CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
@@ -91,7 +96,9 @@ CREATE TABLE {SCHEMA}.{STAGING_TABLE_NAME} (
     has_parsing_error BOOLEAN,
     is_deleted BOOLEAN,
     raw_payload_size_bytes INT,
-    raw_payload VARCHAR(max)
+    raw_payload VARCHAR(max),
+    s3_uri VARCHAR,
+    raw_s3_payload SUPER
 );
 END;
 """
@@ -113,7 +120,9 @@ WHEN MATCHED THEN UPDATE SET
     has_parsing_error = {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error,
     is_deleted = {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted,
     raw_payload_size_bytes = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes,
-    raw_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload
+    raw_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload,
+    s3_uri = {SCHEMA}.{STAGING_TABLE_NAME}.s3_uri,
+    raw_s3_payload = {SCHEMA}.{STAGING_TABLE_NAME}.raw_s3_payload
 
 WHEN NOT MATCHED THEN INSERT VALUES (
     {SCHEMA}.{STAGING_TABLE_NAME}.event_id,
@@ -127,7 +136,9 @@ WHEN NOT MATCHED THEN INSERT VALUES (
     {SCHEMA}.{STAGING_TABLE_NAME}.has_parsing_error,
     {SCHEMA}.{STAGING_TABLE_NAME}.is_deleted,
     {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload_size_bytes,
-    {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload
+    {SCHEMA}.{STAGING_TABLE_NAME}.raw_payload,
+    {SCHEMA}.{STAGING_TABLE_NAME}.s3_uri,
+    {SCHEMA}.{STAGING_TABLE_NAME}.raw_s3_payload
 );
 DROP TABLE {SCHEMA}.{STAGING_TABLE_NAME};
 END;
@@ -298,8 +309,24 @@ def processBatch(data_frame, batchId):
         .filter("sequence_id == 1")
         .drop("sequence_id")
     )
+
+    other_s3_df = (
+        spark.read.format("json")
+        .load(S3_JOIN_PATH)
+        .withColumn("raw_s3_payload", to_json(struct("*")))
+        .withColumn("s3_uri", input_file_name())
+        .select("s3_uri", "raw_s3_payload")
+    )
+    data_frame = data_frame.withColumn("ddb", from_json("new_image", "s3_uri STRING"))
+    ddb_with_s3 = (
+        data_frame.join(
+            other_s3_df, other_s3_df.s3_uri == data_frame.ddb.s3_uri, "left"
+        )
+        .drop("ddb")
+        .na.fill("{}", ["raw_s3_payload", "new_image", "old_image"])
+    )
     s3_microbatch_node = DynamicFrame.fromDF(
-        data_frame, glueContext, "from_data_frame"
+        ddb_with_s3, glueContext, "from_data_frame"
     )
     glueContext.write_dynamic_frame.from_options(
         frame=s3_microbatch_node,
