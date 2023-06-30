@@ -9,15 +9,7 @@ from awsglue.job import Job
 from awsglue.utils import getResolvedOptions
 from boto3.dynamodb.types import TypeDeserializer
 from pyspark.context import SparkContext
-from pyspark.sql.functions import (
-    col,
-    from_json,
-    isnull,
-    lit,
-    row_number,
-    udf,
-    when,
-)
+from pyspark.sql.functions import col, from_json, isnull, lit, row_number, udf, when
 from pyspark.sql.types import IntegerType, LongType, StringType, StructField, StructType
 from pyspark.sql.window import Window
 
@@ -48,7 +40,6 @@ SCHEMA = get_glue_env_var("RedshiftSchema")
 KINESIS_STREAM = get_glue_env_var("StreamARN")
 KINESIS_IAM_ROLE = get_glue_env_var("KinesisRoleARN")
 REDSHIFT_CONNECTION_NAME = get_glue_env_var("RedshiftConnectionName")
-S3_JOIN_PATH = get_glue_env_var("S3JoinPath")
 REDSHIFT_IAM_ROLE = get_glue_env_var("RedshiftIAMRole")
 DESERIALIZER = TypeDeserializer()
 sc = SparkContext()
@@ -298,9 +289,7 @@ def processBatch(data_frame, batchId):
         .filter("sequence_id == 1")
         .drop("sequence_id")
     )
-    s3_microbatch_node = DynamicFrame.fromDF(
-        data_frame, glueContext, "from_data_frame"
-    )
+    s3_microbatch_node = DynamicFrame.fromDF(data_frame, glueContext, "from_data_frame")
     glueContext.write_dynamic_frame.from_options(
         frame=s3_microbatch_node,
         connection_type="redshift",
